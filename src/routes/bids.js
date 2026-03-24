@@ -1,33 +1,62 @@
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
-const { authMiddleware } = require('../middleware/auth');
+const jwt = require('jsonwebtoken');
 
 const router = express.Router();
 const prisma = new PrismaClient();
 
-// Submit bid
+// Auth middleware
+const authMiddleware = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret-key');
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.id },
+      include: { gc: true, contractor: true }
+    });
+    
+    if (!user) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+    
+    req.user = user;
+    next();
+  } catch (error) {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
+// Submit a bid (Contractor only)
 router.post('/', authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'CONTRACTOR') {
       return res.status(403).json({ error: 'Only contractors can bid' });
     }
     
-    const { jobId, proposedRate, message } = req.body;
-    
     const contractor = await prisma.contractor.findUnique({
-      where: { userId: req.user.id },
+      where: { userId: req.user.id }
     });
     
     if (!contractor) {
       return res.status(404).json({ error: 'Contractor profile not found' });
     }
     
+    const { jobId, proposedRate, message } = req.body;
+    
     const job = await prisma.job.findUnique({
-      where: { id: jobId },
+      where: { id: jobId }
     });
     
-    if (!job || job.status !== 'OPEN') {
-      return res.status(400).json({ error: 'Job not available for bidding' });
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    
+    if (job.status !== 'OPEN') {
+      return res.status(400).json({ error: 'Job is no longer available' });
     }
     
     const bid = await prisma.bid.create({
@@ -35,13 +64,13 @@ router.post('/', authMiddleware, async (req, res) => {
         jobId,
         contractorId: contractor.id,
         proposedRate: parseFloat(proposedRate),
-        message,
-      },
+        message
+      }
     });
     
     res.status(201).json(bid);
   } catch (error) {
-    console.error(error);
+    console.error('Error creating bid:', error);
     res.status(500).json({ error: 'Failed to submit bid' });
   }
 });
@@ -50,20 +79,18 @@ router.post('/', authMiddleware, async (req, res) => {
 router.get('/job/:jobId', authMiddleware, async (req, res) => {
   try {
     const job = await prisma.job.findUnique({
-      where: { id: req.params.jobId },
-      include: { gc: true },
+      where: { id: req.params.jobId }
     });
     
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
     
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      include: { gc: true },
+    const gc = await prisma.gC.findUnique({
+      where: { userId: req.user.id }
     });
     
-    if (user.gc?.id !== job.gcId) {
+    if (!gc || job.gcId !== gc.id) {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
@@ -72,69 +99,18 @@ router.get('/job/:jobId', authMiddleware, async (req, res) => {
       include: {
         contractor: {
           include: {
-            user: true,
-          },
-        },
+            user: {
+              select: { name: true }
+            }
+          }
+        }
       },
-      orderBy: { proposedRate: 'asc' },
+      orderBy: { proposedRate: 'asc' }
     });
     
-    res.json(bids);
+    res.json({ bids });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch bids' });
-  }
-});
-
-// Accept bid
-router.patch('/:bidId/accept', authMiddleware, async (req, res) => {
-  try {
-    const bid = await prisma.bid.findUnique({
-      where: { id: req.params.bidId },
-      include: {
-        job: {
-          include: { gc: true },
-        },
-      },
-    });
-    
-    if (!bid) {
-      return res.status(404).json({ error: 'Bid not found' });
-    }
-    
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      include: { gc: true },
-    });
-    
-    if (user.gc?.id !== bid.job.gcId) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    await prisma.bid.update({
-      where: { id: req.params.bidId },
-      data: { status: 'ACCEPTED' },
-    });
-    
-    const updatedJob = await prisma.job.update({
-      where: { id: bid.jobId },
-      data: {
-        hiredContractorId: bid.contractorId,
-        status: 'IN_PROGRESS',
-      },
-    });
-    
-    await prisma.bid.updateMany({
-      where: {
-        jobId: bid.jobId,
-        id: { not: req.params.bidId },
-      },
-      data: { status: 'REJECTED' },
-    });
-    
-    res.json({ message: 'Bid accepted', job: updatedJob });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to accept bid' });
   }
 });
 
