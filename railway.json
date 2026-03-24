@@ -1,10 +1,10 @@
 {
   "build": {
     "builder": "NIXPACKS",
-    "buildCommand": "npm install && npx prisma generate"
+    "buildCommand": "npm install"
   },
   "deploy": {
-    "startCommand": "npx prisma migrate deploy && node src/index.js",
+    "startCommand": "node src/index.js",
     "healthcheckPath": "/health",
     "restartPolicyType": "ON_FAILURE"
   }
