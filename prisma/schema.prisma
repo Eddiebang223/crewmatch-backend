@@ -50,7 +50,6 @@ model Contractor {
   
   bids            Bid[]
   jobs            Job[]       @relation("ContractorJobs")
-  reviews         Review[]    
 }
 
 model GC {
@@ -63,7 +62,6 @@ model GC {
   createdAt       DateTime    @default(now())
   
   jobs            Job[]
-  reviews         Review[]    
 }
 
 model Job {
@@ -87,6 +85,7 @@ model Job {
   bids            Bid[]
   hiredContractor Contractor? @relation("ContractorJobs", fields: [hiredContractorId], references: [id])
   hiredContractorId String?
+  payments        Payment[]
 }
 
 enum Trade {
