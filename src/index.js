@@ -8,6 +8,10 @@ const PORT = process.env.PORT || 5000;
 // Simple in-memory storage
 const users = [];
 
+// In-memory job storage
+let jobs = [];
+let nextJobId = 1;
+
 // Middleware
 app.use(cors({
   origin: '*',
@@ -112,7 +116,7 @@ app.post('/api/auth/login', (req, res) => {
   }
 });
 
-// JOBS endpoint
+// GET JOBS endpoint - returns all jobs
 app.get('/api/jobs', (req, res) => {
   const authHeader = req.headers.authorization;
   
@@ -126,24 +130,58 @@ app.get('/api/jobs', (req, res) => {
     const decoded = jwt.verify(token, 'secret-key');
     console.log('Jobs requested by:', decoded.email);
     
-    res.json({
-      jobs: [
-        {
-          id: 1,
-          title: "Sample Electrical Job",
-          trade: "ELECTRICIAN",
-          description: "Need experienced electrician for commercial building project.",
-          location: "Austin, TX",
-          startDate: "2026-04-01",
-          endDate: "2026-04-07",
-          hours: 40,
-          rateMin: 45,
-          rateMax: 60,
-          status: "OPEN"
-        }
-      ]
-    });
+    // Return all open jobs
+    res.json({ jobs: jobs.filter(job => job.status === 'OPEN') });
   } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// CREATE JOB endpoint (POST) - ADD THIS ENTIRE BLOCK
+app.post('/api/jobs', (req, res) => {
+  console.log('=== CREATE JOB REQUEST ===');
+  
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+  
+  const token = authHeader.replace('Bearer ', '');
+  
+  try {
+    const decoded = jwt.verify(token, 'secret-key');
+    console.log('User creating job:', decoded.email);
+    
+    const { title, trade, description, location, startDate, endDate, hours, rateMin, rateMax } = req.body;
+    
+    // Validate required fields
+    if (!title || !description || !location || !startDate || !endDate || !hours) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    const newJob = {
+      id: nextJobId++,
+      title,
+      trade: trade || 'OTHER',
+      description,
+      location,
+      startDate,
+      endDate,
+      hours: parseInt(hours),
+      rateMin: rateMin ? parseFloat(rateMin) : 0,
+      rateMax: rateMax ? parseFloat(rateMax) : 0,
+      status: 'OPEN',
+      createdAt: new Date().toISOString(),
+      postedBy: decoded.email
+    };
+    
+    jobs.push(newJob);
+    console.log('Job created:', newJob.id, newJob.title);
+    console.log('Total jobs:', jobs.length);
+    
+    res.status(201).json(newJob);
+  } catch (error) {
+    console.error('Job creation error:', error);
     return res.status(401).json({ error: 'Invalid token' });
   }
 });
