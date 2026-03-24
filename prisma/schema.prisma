@@ -86,6 +86,7 @@ model Job {
   hiredContractor Contractor? @relation("ContractorJobs", fields: [hiredContractorId], references: [id])
   hiredContractorId String?
   payments        Payment[]
+  reviews         Review[]    // ← ADD THIS LINE
 }
 
 enum Trade {
