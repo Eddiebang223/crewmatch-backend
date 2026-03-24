@@ -9,20 +9,45 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'crewmatch-secret-key-2024';
 
-// Middleware
+// ALLOWED FRONTEND URLS
+const allowedOrigins = [
+  'https://crewmatch-frontend-2y8nm0p9f-eddiebang223s-projects.vercel.app',
+  'https://crewmatch-frontend.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:5000'
+];
+
+// CORS configuration - FIXES THE ERROR
 app.use(cors({
-  origin: ['https://crewmatch-frontend.vercel.app', 'http://localhost:3000', 'http://localhost:5000'],
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('Blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  exposedHeaders: ['Content-Length', 'X-Request-Id']
 }));
+
+// Handle preflight requests
+app.options('*', cors());
+
 app.use(express.json());
 
 // Logging middleware
 app.use((req, res, next) => {
-  console.log(`📝 ${req.method} ${req.path}`);
+  console.log(`📝 ${req.method} ${req.path} - Origin: ${req.headers.origin}`);
   next();
 });
 
-// Health check - MUST respond quickly
+// Health check
 app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'healthy', 
@@ -71,6 +96,7 @@ const authMiddleware = async (req, res, next) => {
 // ========== AUTH ENDPOINTS ==========
 
 app.post('/api/auth/register', async (req, res) => {
+  console.log('📝 Registration attempt:', req.body.email);
   try {
     const { email, password, name, role, companyName } = req.body;
     
@@ -303,5 +329,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 CrewMatch API v2.0.0`);
   console.log(`📡 Running on port ${PORT}`);
   console.log(`💚 Health: http://localhost:${PORT}/health`);
+  console.log(`🌐 Allowed origins: ${allowedOrigins.join(', ')}`);
   console.log(`🗄️  Database: ${process.env.DATABASE_URL ? 'Connected' : 'Not configured'}\n`);
 });
