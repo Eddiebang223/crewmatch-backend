@@ -3,26 +3,62 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
-const db = require('./db');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'crewmatch-secret-key-2024';
 
-// ALLOWED FRONTEND URLS
+// Database connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Helper functions
+const query = async (text, params) => {
+  const start = Date.now();
+  const res = await pool.query(text, params);
+  const duration = Date.now() - start;
+  console.log(`📊 Query: ${text.substring(0, 100)}... (${duration}ms, ${res.rowCount} rows)`);
+  return res;
+};
+
+const getUserByEmail = async (email) => {
+  const res = await query('SELECT * FROM "User" WHERE email = $1', [email]);
+  return res.rows[0];
+};
+
+const getUserById = async (id) => {
+  const res = await query('SELECT * FROM "User" WHERE id = $1', [id]);
+  return res.rows[0];
+};
+
+const createUser = async (user) => {
+  const { id, email, password, name, role, companyName } = user;
+  const res = await query(
+    `INSERT INTO "User" (id, email, password, name, role, "companyName", "createdAt") 
+     VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING *`,
+    [id, email, password, name, role, companyName]
+  );
+  return res.rows[0];
+};
+
+// ========== CORS - ALLOW ALL VERCEL URLS ==========
 const allowedOrigins = [
-  'https://crewmatch-frontend-2y8nm0p9f-eddiebang223s-projects.vercel.app',
   'https://crewmatch-frontend.vercel.app',
+  'https://crewmatch-frontend-2y8nm0p9f-eddiebang223s-projects.vercel.app',
+  'https://crewmatch-frontend-ne01in2z3-eddiebang223s-projects.vercel.app',
   'http://localhost:3000',
   'http://localhost:5000'
 ];
 
-// CORS configuration - FIXES THE ERROR
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
+    // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
     
+    // Check if origin is allowed
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
@@ -60,13 +96,7 @@ app.get('/', (req, res) => {
   res.json({ 
     name: 'CrewMatch API',
     version: '2.0.0',
-    status: 'operational',
-    endpoints: {
-      auth: '/api/auth/register, /api/auth/login',
-      jobs: '/api/jobs',
-      bids: '/api/bids, /api/my-bids',
-      health: '/health'
-    }
+    status: 'operational'
   });
 });
 
@@ -81,7 +111,7 @@ const authMiddleware = async (req, res, next) => {
   
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await db.getUserById(decoded.id);
+    const user = await getUserById(decoded.id);
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
@@ -96,7 +126,7 @@ const authMiddleware = async (req, res, next) => {
 // ========== AUTH ENDPOINTS ==========
 
 app.post('/api/auth/register', async (req, res) => {
-  console.log('📝 Registration attempt:', req.body.email);
+  console.log(`📝 Registration attempt: ${req.body.email}`);
   try {
     const { email, password, name, role, companyName } = req.body;
     
@@ -104,7 +134,7 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Email, password, and name are required' });
     }
     
-    const existingUser = await db.getUserByEmail(email);
+    const existingUser = await getUserByEmail(email);
     if (existingUser) {
       return res.status(400).json({ error: 'User already exists' });
     }
@@ -119,7 +149,7 @@ app.post('/api/auth/register', async (req, res) => {
       companyName: companyName || name
     };
     
-    const user = await db.createUser(newUser);
+    const user = await createUser(newUser);
     console.log(`✅ User created: ${email}`);
     
     const token = jwt.sign(
@@ -147,7 +177,7 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    const user = await db.getUserByEmail(email);
+    const user = await getUserByEmail(email);
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -182,8 +212,8 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/jobs', authMiddleware, async (req, res) => {
   try {
-    const jobs = await db.getOpenJobs();
-    res.json({ jobs });
+    const result = await query('SELECT * FROM "Job" WHERE status = $1 ORDER BY "createdAt" DESC', ['OPEN']);
+    res.json({ jobs: result.rows });
   } catch (error) {
     console.error('Jobs error:', error);
     res.status(500).json({ error: 'Failed to fetch jobs' });
@@ -202,23 +232,16 @@ app.post('/api/jobs', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     
-    const newJob = {
-      id: uuidv4(),
-      title,
-      trade: trade || 'OTHER',
-      description,
-      location,
-      startDate: new Date(startDate),
-      endDate: new Date(endDate),
-      hours: parseInt(hours),
-      rateMin: rateMin ? parseFloat(rateMin) : 0,
-      rateMax: rateMax ? parseFloat(rateMax) : 0,
-      gcId: req.user.id
-    };
+    const jobId = uuidv4();
+    await query(
+      `INSERT INTO "Job" (id, title, trade, description, location, "startDate", "endDate", hours, "rateMin", "rateMax", status, "gcId", "createdAt") 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'OPEN', $11, NOW())`,
+      [jobId, title, trade || 'OTHER', description, location, new Date(startDate), new Date(endDate), parseInt(hours), rateMin ? parseFloat(rateMin) : 0, rateMax ? parseFloat(rateMax) : 0, req.user.id]
+    );
     
-    const job = await db.createJob(newJob);
-    console.log(`✅ Job created: ${job.title}`);
-    res.status(201).json(job);
+    const result = await query('SELECT * FROM "Job" WHERE id = $1', [jobId]);
+    console.log(`✅ Job created: ${title}`);
+    res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Job creation error:', error);
     res.status(500).json({ error: 'Failed to create job' });
@@ -239,7 +262,8 @@ app.post('/api/bids', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Job ID and rate required' });
     }
     
-    const job = await db.getJobById(jobId);
+    const jobResult = await query('SELECT * FROM "Job" WHERE id = $1', [jobId]);
+    const job = jobResult.rows[0];
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
@@ -248,17 +272,16 @@ app.post('/api/bids', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Job no longer available' });
     }
     
-    const newBid = {
-      id: uuidv4(),
-      jobId,
-      contractorId: req.user.id,
-      proposedRate: parseFloat(proposedRate),
-      message: message || ''
-    };
+    const bidId = uuidv4();
+    await query(
+      `INSERT INTO "Bid" (id, "jobId", "contractorId", "proposedRate", message, status, "createdAt") 
+       VALUES ($1, $2, $3, $4, $5, 'PENDING', NOW())`,
+      [bidId, jobId, req.user.id, parseFloat(proposedRate), message || '']
+    );
     
-    const bid = await db.createBid(newBid);
-    console.log(`✅ Bid created: $${bid.proposedRate}/hr for job ${jobId}`);
-    res.status(201).json(bid);
+    const bidResult = await query('SELECT * FROM "Bid" WHERE id = $1', [bidId]);
+    console.log(`✅ Bid created: $${proposedRate}/hr for job ${jobId}`);
+    res.status(201).json(bidResult.rows[0]);
   } catch (error) {
     console.error('Bid error:', error);
     res.status(500).json({ error: 'Failed to submit bid' });
@@ -267,8 +290,8 @@ app.post('/api/bids', authMiddleware, async (req, res) => {
 
 app.get('/api/my-bids', authMiddleware, async (req, res) => {
   try {
-    const bids = await db.getBidsByContractorId(req.user.id);
-    res.json({ bids });
+    const result = await query('SELECT * FROM "Bid" WHERE "contractorId" = $1 ORDER BY "createdAt" DESC', [req.user.id]);
+    res.json({ bids: result.rows });
   } catch (error) {
     console.error('My bids error:', error);
     res.status(500).json({ error: 'Failed to fetch bids' });
@@ -277,7 +300,8 @@ app.get('/api/my-bids', authMiddleware, async (req, res) => {
 
 app.get('/api/jobs/:jobId/bids', authMiddleware, async (req, res) => {
   try {
-    const job = await db.getJobById(req.params.jobId);
+    const jobResult = await query('SELECT * FROM "Job" WHERE id = $1', [req.params.jobId]);
+    const job = jobResult.rows[0];
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
@@ -286,8 +310,8 @@ app.get('/api/jobs/:jobId/bids', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
-    const bids = await db.getBidsByJobId(req.params.jobId);
-    res.json({ bids });
+    const bidsResult = await query('SELECT * FROM "Bid" WHERE "jobId" = $1 ORDER BY "proposedRate" ASC', [req.params.jobId]);
+    res.json({ bids: bidsResult.rows });
   } catch (error) {
     console.error('Job bids error:', error);
     res.status(500).json({ error: 'Failed to fetch bids' });
@@ -301,17 +325,25 @@ app.patch('/api/bids/:bidId', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Invalid status' });
     }
     
-    const bid = await db.updateBidStatus(req.params.bidId, status);
+    const bidResult = await query('SELECT * FROM "Bid" WHERE id = $1', [req.params.bidId]);
+    const bid = bidResult.rows[0];
+    if (!bid) {
+      return res.status(404).json({ error: 'Bid not found' });
+    }
+    
+    await query('UPDATE "Bid" SET status = $1 WHERE id = $2', [status, req.params.bidId]);
     
     if (status === 'ACCEPTED') {
-      const job = await db.getJobById(bid.jobId);
+      const jobResult = await query('SELECT * FROM "Job" WHERE id = $1', [bid.jobId]);
+      const job = jobResult.rows[0];
       if (job && job.gcId === req.user.id) {
-        await db.updateJobStatus(job.id, 'FILLED');
+        await query('UPDATE "Job" SET status = $1 WHERE id = $2', ['FILLED', job.id]);
         console.log(`✅ Job ${job.id} filled by ${bid.contractorId}`);
       }
     }
     
-    res.json({ message: `Bid ${status.toLowerCase()}`, bid });
+    const updatedBid = await query('SELECT * FROM "Bid" WHERE id = $1', [req.params.bidId]);
+    res.json({ message: `Bid ${status.toLowerCase()}`, bid: updatedBid.rows[0] });
   } catch (error) {
     console.error('Bid update error:', error);
     res.status(500).json({ error: 'Failed to update bid' });
@@ -330,5 +362,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📡 Running on port ${PORT}`);
   console.log(`💚 Health: http://localhost:${PORT}/health`);
   console.log(`🌐 Allowed origins: ${allowedOrigins.join(', ')}`);
-  console.log(`🗄️  Database: ${process.env.DATABASE_URL ? 'Connected' : 'Not configured'}\n`);
+  console.log(`🗄️  Database: Connected\n`);
 });
