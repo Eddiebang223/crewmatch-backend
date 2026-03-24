@@ -17,10 +17,12 @@ app.use(express.json());
 // Import routes
 const authRoutes = require('./routes/auth');
 const jobsRoutes = require('./routes/jobs');  // ← ADD THIS
+const bidsRoutes = require('./routes/bids');
 
 // Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/jobs', jobsRoutes);  // ← ADD THIS
+app.use('/api/bids', bidsRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
